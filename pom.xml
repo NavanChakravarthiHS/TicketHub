@@ -107,6 +107,18 @@
             <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+            H2 in-memory database for integration tests.
+            MySQL compatibility mode (MODE=MySQL) lets Hibernate generate
+            the same DDL it would against a real MySQL instance, including
+            the version column used by optimistic locking.
+        -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

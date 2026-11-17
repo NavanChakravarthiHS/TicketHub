@@ -2,10 +2,13 @@ package com.tickethub.controller;
 
 import com.tickethub.dto.BookingRequest;
 import com.tickethub.dto.BookingResponse;
+import com.tickethub.exception.ResourceNotFoundException;
+import com.tickethub.security.AppUserDetails;
 import com.tickethub.service.BookingService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -19,12 +22,16 @@ import java.util.List;
 /**
  * HTTP layer for bookings.
  *
- * <p>All routes include {@code /users/{userId}} so the caller's identity is explicit
- * in this step. When JWT is added in Step 6, userId will be extracted from the
- * security principal instead, and these path variables will be removed.</p>
+ * <h2>Ownership enforcement</h2>
+ * <p>The route is {@code /api/users/{userId}/bookings/**}.
+ * The {@code {userId}} in the path is the <em>target</em> user (whose bookings to act on).
+ * The JWT principal is the <em>caller</em>.
+ * Before delegating to the service we assert that the caller <em>is</em> the target user,
+ * or is an ADMIN. This prevents user A from reading or cancelling user B's bookings
+ * even with a valid token.</p>
  *
  * <ul>
- *   <li>POST   /api/users/{userId}/bookings          — book seats</li>
+ *   <li>POST   /api/users/{userId}/bookings          — book seats (USER or ADMIN)</li>
  *   <li>DELETE /api/users/{userId}/bookings/{id}     — cancel a booking</li>
  *   <li>GET    /api/users/{userId}/bookings           — booking history</li>
  * </ul>
@@ -39,48 +46,51 @@ public class BookingController {
         this.bookingService = bookingService;
     }
 
-    /**
-     * Book one or more seats for a show.
-     *
-     * <p>Possible responses:
-     * <ul>
-     *   <li>201 Created   — booking confirmed, body is {@link BookingResponse}</li>
-     *   <li>400 Bad Request — invalid JSON, failed @Valid, or seat ids not for this show</li>
-     *   <li>404 Not Found  — user or show does not exist</li>
-     *   <li>409 Conflict   — one or more seats already BOOKED (either sequential or concurrent)</li>
-     * </ul>
-     */
     @PostMapping
-    public ResponseEntity<BookingResponse> book(@PathVariable Long userId,
-                                                @Valid @RequestBody BookingRequest request) {
+    public ResponseEntity<BookingResponse> book(
+            @PathVariable Long userId,
+            @AuthenticationPrincipal AppUserDetails principal,
+            @Valid @RequestBody BookingRequest request) {
+
+        assertOwnerOrAdmin(principal, userId);
         BookingResponse body = bookingService.book(userId, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(body);
     }
 
-    /**
-     * Cancel a confirmed booking. The booking row is kept (status → CANCELLED)
-     * and the seats are freed so another user can book them.
-     *
-     * <p>Possible responses:
-     * <ul>
-     *   <li>200 OK        — cancellation confirmed, body is the updated {@link BookingResponse}</li>
-     *   <li>404 Not Found — booking does not exist or belongs to a different user</li>
-     *   <li>409 Conflict  — booking is already cancelled</li>
-     * </ul>
-     */
     @DeleteMapping("/{id}")
-    public BookingResponse cancel(@PathVariable Long userId,
-                                  @PathVariable Long id) {
+    public BookingResponse cancel(
+            @PathVariable Long userId,
+            @PathVariable Long id,
+            @AuthenticationPrincipal AppUserDetails principal) {
+
+        assertOwnerOrAdmin(principal, userId);
         return bookingService.cancel(userId, id);
     }
 
-    /**
-     * Full booking history for a user, newest first.
-     * Cancelled bookings are included.
-     */
     @GetMapping
-    public List<BookingResponse> history(@PathVariable Long userId) {
+    public List<BookingResponse> history(
+            @PathVariable Long userId,
+            @AuthenticationPrincipal AppUserDetails principal) {
+
+        assertOwnerOrAdmin(principal, userId);
         return bookingService.history(userId);
     }
-}
 
+    // -------------------------------------------------------------------------
+    // Ownership guard
+    // -------------------------------------------------------------------------
+
+    /**
+     * Throws a 404 (not 403) if the caller is neither the target user nor an ADMIN.
+     *
+     * <p>Returning 404 instead of 403 is deliberate: a 403 would reveal that the
+     * resource exists and belongs to someone else. A 404 leaks nothing.</p>
+     */
+    private void assertOwnerOrAdmin(AppUserDetails principal, Long targetUserId) {
+        boolean isAdmin = principal.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+        if (!isAdmin && !principal.getId().equals(targetUserId)) {
+            throw new ResourceNotFoundException("Booking not found");
+        }
+    }
+}
